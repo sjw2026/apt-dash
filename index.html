@@ -37,13 +37,32 @@
         <header class="bg-white shadow-sm rounded-xl p-6 border border-gray-100 flex justify-between items-center">
             <div>
                 <h1 class="text-2xl md:text-3xl font-bold text-gray-900">강북구 아파트 실거래가 대시보드</h1>
-                <p class="text-sm text-gray-500 mt-2">구글 시트 실시간 데이터 연동</p>
+                <div class="flex items-center gap-2 mt-2">
+                    <p class="text-sm text-gray-500">구글 시트 실시간 데이터 연동</p>
+                    <span class="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded-full" id="updateTime">데이터 로딩중...</span>
+                </div>
             </div>
             <div id="loading" class="flex items-center text-blue-500 font-medium">
                 <div class="loader ease-linear rounded-full border-4 border-t-4 border-gray-200 h-6 w-6 mr-3"></div>
                 데이터 불러오는 중...
             </div>
         </header>
+
+        <!-- 필터 영역 (법정동, 아파트명) -->
+        <div class="bg-white shadow-sm rounded-xl p-6 border border-gray-100 flex flex-col md:flex-row gap-4 items-center" id="filterSection" style="display: none;">
+            <div class="w-full md:w-1/2">
+                <label for="dongFilter" class="block text-sm font-semibold text-gray-700 mb-2">법정동 선택</label>
+                <select id="dongFilter" class="w-full border border-gray-300 rounded-lg p-3 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white">
+                    <option value="all">전체 법정동</option>
+                </select>
+            </div>
+            <div class="w-full md:w-1/2">
+                <label for="aptFilter" class="block text-sm font-semibold text-gray-700 mb-2">아파트명 선택</label>
+                <select id="aptFilter" class="w-full border border-gray-300 rounded-lg p-3 text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white">
+                    <option value="all">전체 아파트</option>
+                </select>
+            </div>
+        </div>
 
         <!-- 요약 카드 (전체 건수, 평균, 최고, 최저) -->
         <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4" id="summaryCards" style="display: none;">
@@ -137,6 +156,10 @@
             return '대형(85㎡ 초과)';
         };
 
+        // 전역 변수 (데이터 필터링 및 차트 초기화 용도)
+        let globalData = [];
+        let priceChartInstance = null;
+
         // 메인 실행 함수
         async function initDashboard() {
             try {
@@ -166,7 +189,8 @@
                             return;
                         }
 
-                        processData(data);
+                        // 데이터 설정 함수 호출
+                        setupData(data);
                     },
                     error: function(err) {
                         showError("데이터를 불러오는데 실패했습니다: " + err.message);
@@ -177,34 +201,117 @@
             }
         }
 
-        // 6. 데이터 가공 및 화면 렌더링
-        function processData(rawData) {
-            // 유효한 데이터만 필터링 (거래금액이 있는 경우만)
-            const validData = rawData.filter(row => row['거래금액(만원)'] && row['거래일자']);
+        // 6. 전체 데이터 설정 및 필터 구성
+        function setupData(rawData) {
+            // 유효한 데이터만 필터링 및 전역 변수에 저장
+            globalData = rawData.filter(row => row['거래금액(만원)'] && row['거래일자']);
 
-            // 데이터가 필터링 후 0건이 된 경우 에러 표시
-            if (validData.length === 0) {
-                showError('데이터는 연결되었으나 유효한 거래 내역이 없습니다.\n구글 시트의 1번째 줄(열 이름)이 "거래일자", "거래금액(만원)"과 정확히 일치하는지 확인해주세요.');
+            if (globalData.length === 0) {
+                showError('데이터는 연결되었으나 유효한 거래 내역이 없습니다.\n구글 시트의 1번째 줄(열 이름)이 "거래일자", "거래금액(만원)"과 일치하는지 확인해주세요.');
                 return;
             }
 
-            // 데이터 최신순 정렬 (날짜 기준 내림차순)
-            validData.sort((a, b) => {
+            // 전체 데이터를 최신순으로 한 번만 정렬
+            globalData.sort((a, b) => {
                 const dateA = String(a['거래일자']).replace(/\D/g, '');
                 const dateB = String(b['거래일자']).replace(/\D/g, '');
                 return dateB.localeCompare(dateA);
             });
 
-            // 요약 계산 변수
+            initFilters();
+            applyFilter(); // 첫 화면 렌더링
+
+            // 로드 완료 시간 화면에 표시
+            const now = new Date();
+            const timeString = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')} 기준`;
+            const updateTimeEl = document.getElementById('updateTime');
+            if (updateTimeEl) {
+                updateTimeEl.innerText = timeString;
+                updateTimeEl.classList.remove('bg-gray-100', 'text-gray-600');
+                updateTimeEl.classList.add('bg-green-100', 'text-green-700');
+            }
+        }
+
+        // 7. 필터 드롭다운 초기화
+        function initFilters() {
+            const dongSelect = document.getElementById('dongFilter');
+            const aptSelect = document.getElementById('aptFilter');
+            
+            // 유니크한 법정동 목록 추출 및 정렬
+            const dongs = [...new Set(globalData.map(d => d['법정동']).filter(Boolean))].sort();
+            
+            dongs.forEach(dong => {
+                const opt = document.createElement('option');
+                opt.value = dong;
+                opt.innerText = dong;
+                dongSelect.appendChild(opt);
+            });
+
+            // 법정동 변경 이벤트: 아파트 목록 업데이트 후 데이터 렌더링
+            dongSelect.addEventListener('change', () => {
+                updateAptFilter();
+                applyFilter();
+            });
+
+            // 아파트 변경 이벤트: 데이터 렌더링
+            aptSelect.addEventListener('change', () => {
+                applyFilter();
+            });
+
+            // 필터 영역 노출
+            document.getElementById('filterSection').style.display = 'flex';
+            
+            // 초기 아파트 목록 세팅
+            updateAptFilter();
+        }
+
+        // 종속형 아파트 필터 업데이트 (선택된 법정동에 따라)
+        function updateAptFilter() {
+            const selectedDong = document.getElementById('dongFilter').value;
+            const aptSelect = document.getElementById('aptFilter');
+            
+            aptSelect.innerHTML = '<option value="all">전체 아파트</option>';
+
+            let apts = [];
+            if (selectedDong === 'all') {
+                apts = [...new Set(globalData.map(d => d['아파트명']).filter(Boolean))];
+            } else {
+                apts = [...new Set(globalData.filter(d => d['법정동'] === selectedDong).map(d => d['아파트명']).filter(Boolean))];
+            }
+
+            apts.sort().forEach(apt => {
+                const opt = document.createElement('option');
+                opt.value = apt;
+                opt.innerText = apt;
+                aptSelect.appendChild(opt);
+            });
+        }
+
+        // 8. 필터 값에 따라 데이터를 걸러내고 대시보드 업데이트
+        function applyFilter() {
+            const selectedDong = document.getElementById('dongFilter').value;
+            const selectedApt = document.getElementById('aptFilter').value;
+
+            let filteredData = globalData;
+            
+            if (selectedDong !== 'all') {
+                filteredData = filteredData.filter(d => d['법정동'] === selectedDong);
+            }
+            if (selectedApt !== 'all') {
+                filteredData = filteredData.filter(d => d['아파트명'] === selectedApt);
+            }
+
+            renderDashboard(filteredData);
+        }
+
+        // 9. 대시보드 화면 렌더링 (요약카드, 테이블, 차트)
+        function renderDashboard(validData) {
             let totalTx = validData.length;
             let sumPrice = 0;
             let maxPrice = 0;
             let minPrice = Infinity;
 
-            // 차트 데이터용 객체 { '2024-01': { '소형': [가격들], '중형': [가격들], '대형': [가격들] } }
             const chartDataObj = {};
-
-            // 테이블 렌더링용 HTML 텍스트
             let tableHTML = '';
 
             validData.forEach((row, index) => {
@@ -212,12 +319,12 @@
                 const month = extractMonth(row['거래일자']);
                 const areaGroup = getAreaGroup(row['전용면적(㎡)']);
 
-                // 요약 데이터 업데이트
+                // 요약 계산
                 sumPrice += price;
                 if (price > maxPrice) maxPrice = price;
                 if (price < minPrice) minPrice = price;
 
-                // 차트 데이터 축적
+                // 차트 데이터 수집
                 if (month !== '알수없음') {
                     if (!chartDataObj[month]) chartDataObj[month] = { '소형(60㎡ 이하)': [], '중형(60~85㎡)': [], '대형(85㎡ 초과)': [] };
                     if (chartDataObj[month][areaGroup]) {
@@ -225,7 +332,7 @@
                     }
                 }
 
-                // 테이블 행 생성 (부하 방지를 위해 최대 200건만 생성)
+                // 테이블 HTML 생성 (브라우저 부하 방지용 최대 200건 표기)
                 if(index < 200) {
                     tableHTML += `
                         <tr class="hover:bg-blue-50 transition-colors">
@@ -241,42 +348,49 @@
                 }
             });
 
-            if(minPrice === Infinity) minPrice = 0;
+            if (minPrice === Infinity) minPrice = 0;
             const avgPrice = totalTx > 0 ? Math.round(sumPrice / totalTx) : 0;
 
-            // 7. 화면에 값 입력
+            // HTML에 계산된 값 삽입
             document.getElementById('totalCount').innerText = formatNum(totalTx) + "건";
             document.getElementById('avgPrice').innerText = formatNum(avgPrice) + "만원";
             document.getElementById('maxPrice').innerText = formatNum(maxPrice) + "만원";
             document.getElementById('minPrice').innerText = formatNum(minPrice) + "만원";
+
+            if (totalTx === 0) {
+                tableHTML = '<tr><td colspan="7" class="py-6 text-center text-gray-500">선택한 조건에 맞는 거래 데이터가 없습니다.</td></tr>';
+            }
             document.getElementById('tableBody').innerHTML = tableHTML;
 
-            // 로딩 종료 및 영역 보이기
+            // 요소 보이게 처리
             document.getElementById('loading').style.display = 'none';
             document.getElementById('summaryCards').style.display = 'grid';
             document.getElementById('chartSection').style.display = 'block';
             document.getElementById('tableSection').style.display = 'block';
 
-            // 8. 차트 그리기
+            // 차트 재생성
             drawChart(chartDataObj);
         }
 
-        // 차트 생성 함수
+        // 10. 차트 그리기
         function drawChart(chartDataObj) {
-            // 월별 오름차순 정렬
+            // 필터를 바꿀 때마다 기존 차트가 겹쳐서 깜빡이는 현상(버그)을 막기 위해 파괴 후 재생성
+            if (priceChartInstance) {
+                priceChartInstance.destroy();
+            }
+
             const months = Object.keys(chartDataObj).sort();
-            
             const areaTypes = ['소형(60㎡ 이하)', '중형(60~85㎡)', '대형(85㎡ 초과)'];
             const colors = {
-                '소형(60㎡ 이하)': 'rgb(59, 130, 246)',   // 파랑
-                '중형(60~85㎡)': 'rgb(16, 185, 129)',     // 초록
-                '대형(85㎡ 초과)': 'rgb(249, 115, 22)'    // 주황
+                '소형(60㎡ 이하)': 'rgb(59, 130, 246)',
+                '중형(60~85㎡)': 'rgb(16, 185, 129)',
+                '대형(85㎡ 초과)': 'rgb(249, 115, 22)'
             };
 
             const datasets = areaTypes.map(type => {
                 const data = months.map(month => {
                     const prices = chartDataObj[month][type];
-                    if (!prices || prices.length === 0) return null; // 거래가 없으면 끊김
+                    if (!prices || prices.length === 0) return null;
                     const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
                     return Math.round(avg);
                 });
@@ -287,14 +401,14 @@
                     borderColor: colors[type],
                     backgroundColor: colors[type],
                     tension: 0.3,
-                    spanGaps: true, // 빈 데이터가 있어도 선을 연결
+                    spanGaps: true,
                     pointRadius: 4,
                     borderWidth: 2
                 };
             });
 
             const ctx = document.getElementById('priceChart').getContext('2d');
-            new Chart(ctx, {
+            priceChartInstance = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: months,
@@ -303,10 +417,7 @@
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    interaction: {
-                        mode: 'index',
-                        intersect: false,
-                    },
+                    interaction: { mode: 'index', intersect: false },
                     plugins: {
                         tooltip: {
                             callbacks: {
@@ -325,9 +436,7 @@
                     scales: {
                         y: {
                             ticks: {
-                                callback: function(value) {
-                                    return formatNum(value) + '만';
-                                }
+                                callback: function(value) { return formatNum(value) + '만'; }
                             }
                         }
                     }
